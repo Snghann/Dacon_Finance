@@ -37,7 +37,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
    LoRA를 사용하면 기존 모델의 대규모 파라미터를 전부 재학습할 필요 없이, 소수의 추가 파라미터만을 학습하여 모델을 새로운 태스크에 적응시킬 수 있어, 전체 모델을 처음부터 다시 학습하는 것보다 훨씬 적은 계산 자원을 사용하여, 시간과 비용을 절
    약 할 수 있음
 
-'''
+```   
 lora_config = LoraConfig(
     lora_alpha = 32,
     lora_dropout = 0.05,
@@ -45,8 +45,8 @@ lora_config = LoraConfig(
     target_modules = ["q_proj", "k_proj", "v_proj"]
 )
 
-model = get_peft_model(model, lora_config)
-'''
+model = get_peft_model(model, lora_config)  
+```   
 
 4. Trainning    
 
