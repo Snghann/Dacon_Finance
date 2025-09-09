@@ -46,7 +46,10 @@ lora_config = LoraConfig(
 )
 
 model = get_peft_model(model, lora_config)  
-```   
+```
+
+3. Tokenizing
+   질문-답변에 형식에 알맞은 프롬프트 포멧 함수를 정의하여 토큰화
 
 4. Trainning    
 
@@ -54,97 +57,114 @@ model = get_peft_model(model, lora_config)
       
 
 ### 추론     
-1. 하이브리드 검색기     
+1. 객관식 여부 판단 함수와 질문과 선택지 분리 함수
 ``` 
-def hybrid_search(question: str, top_k: int, bm25_weight: int, faiss_weight: int):
-  # bm25 점수
-  tokenized_question = question.split()
-  bm25_scores = bm25_okapi.get_scores(tokenized_question)
-  bm25_scores_norm = bm25_scores / (np.max(bm25_scores) + 1e-8)
+def is_multiple_choice(question_text):
+    """
+    객관식 여부를 판단: 2개 이상의 숫자 선택지가 줄 단위로 존재할 경우 객관식으로 간주
+    """
+    lines = question_text.strip().split("\n")
+    option_count = sum(bool(re.match(r"^\s*[1-9][0-9]?\s", line)) for line in lines)
+    return option_count >= 2
 
-  # faiss 점수
-  ques_embedding = faiss_embeddings.embed_query(question)
-  D, I = faiss_vectordb.index.search(np.array([ques_embedding]), len(all_chunks))
-  faiss_scores = np.zeros(len(all_chunks))
-  faiss_scores[I[0]] = (np.max(D[0]) - D[0]) / (np.max(D[0]) - np.min(D[0]) + 1e-8)
 
-  # 가중합
-  combined_scores = bm25_weight * bm25_scores_norm + faiss_weight * faiss_scores
+def extract_question_and_choices(full_text):
+    """
+    전체 질문 문자열에서 질문 본문과 선택지 리스트를 분리
+    """
+    lines = full_text.strip().split("\n")
+    q_lines = []
+    options = []
 
-  # Top-K 문서 선택
-  top_indices = np.argsort(combined_scores)[::-1][:top_k]
-  top_docs = [all_chunks[i] for i in top_indices]
+    for line in lines:
+        if re.match(r"^\s*[1-9][0-9]?\s", line):
+            options.append(line.strip())
+        else:
+            q_lines.append(line.strip())
 
-  return top_docs, combined_scores
+    question = " ".join(q_lines)
+    return question, options
 ```
 
-2. Prompt
+2. 프롬프트 생성기
 ``` 
-def make_prompt_auto(text: str, top_docs: str) -> str:
-    """RAG 컨텍스트를 포함해 객관식/주관식 프롬프트를 자동 구성"""
+def make_prompt_auto(text):
     if is_multiple_choice(text):
         question, options = extract_question_and_choices(text)
         prompt = (
-            "당신은 금융보안 전문가입니다.\n"
-            "아래 질문에 대해 적절한 **정답 선택지 번호만 출력**하세요. 다른 단어/설명 금지.\n\n"
-            "예: 1 / 2/ 3/ 4/ 5\n\n"
-            f"참고문서: {top_docs}\n\n"
-            f"질문: {question}\n"
-            "선택지:\n"
-            f"{'\n'.join(options)}\n\n"
-            "답변:"
-        )
+                "당신은 금융보안 전문가입니다.\n"
+                "아래 질문에 대해 적절한 **정답 선택지 번호만 출력**하세요.\n\n"
+                f"질문: {question}\n"
+                "선택지:\n"
+                f"{chr(10).join(options)}\n\n"
+                "답변:"
+                )
     else:
         prompt = (
-            "당신은 금융보안 전문가입니다.\n"
-            "아래 주관식 질문에 대해 정확하고 간략한 설명을 작성하세요.\n\n"
-            "단, 참고 문서를 바탕으로 답을 구성하되 검색된 내용을 그대로 복사하지 말고 반드시 **재구성, 요약, 재작성**해서 답변해야 합니다.\n\n"
-            f"참고문서: {top_docs}\n\n"
-            f"질문: {text}\n\n"
-            "답변:"
-        )
+                "당신은 금융보안 전문가입니다.\n"
+                "아래 주관식 질문에 대해 정확하고 간략한 설명을 작성하세요.\n\n"
+                f"질문: {text}\n\n"
+                "답변:"
+                )
     return prompt
 ```
 
-2. 대책 생성 함수 (generate_prevention_plan)
+2. 후처리 함수
 ```
-   def inference(question, fine_model, tokenizer, faiss_vectordb, bm25_okapi,
-              top_k: int, bm25_weight: int, faiss_weight: int):
+def extract_answer_only(generated_text: str, original_question: str) -> str:
+    """
+    - "답변:" 이후 텍스트만 추출
+    - 객관식 문제면: 정답 숫자만 추출 (실패 시 전체 텍스트 또는 기본값 반환)
+    - 주관식 문제면: 전체 텍스트 그대로 반환
+    - 공백 또는 빈 응답 방지: 최소 "미응답" 반환
+    """
+    # "답변:" 기준으로 텍스트 분리
+    if "답변:" in generated_text:
+        text = generated_text.split("답변:")[-1].strip()
+    else:
+        text = generated_text.strip()
 
-  top_docs = hybrid_search(question, top_k, bm25_weight, faiss_weight)
-  prompt = make_prompt_auto(question, top_docs)
-  inputs = tokenizer(prompt, return_tensors = 'pt').to('cuda')
+    # 공백 또는 빈 문자열일 경우 기본값 지정
+    if not text:
+        return "미응답"
 
-  # 객관식
-  if is_multiple_choice(question):
-    output_ids = fine_model.generate(
-        **inputs,
-        max_new_tokens=128,
-        do_sample=False,
-    )
-  else:
-    output_ids = fine_model.generate(
-        **inputs,
-        max_new_tokens=256,
-        do_sample=True,
-        temperature=0.3,
-        top_p=0.9
-      )
+    # 객관식 여부 판단
+    is_mc = is_multiple_choice(original_question)
 
-  output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-  pred_answer = extract_answer_only(output_text, original_question=q)
-
-  return pred_answer
+    if is_mc:
+        # 숫자만 추출
+        match = re.match(r"\D*([1-9][0-9]?)", text)
+        if match:
+            return match.group(1)
+        else:
+            # 숫자 추출 실패 시 "0" 반환
+            return "0"
+    else:
+        return text
 ```
 
-3. 추론
+3. Fine-tuning 모델 학
+```
+fine_tuned_model_name = "/content/drive/MyDrive/Dacon/finetuned_model_10/checkpoint-1284"
+
+fine_tuned_model = AutoModelForCausalLM.from_pretrained(fine_tuned_model_name,
+                                                        device_map = "auto",
+                                                        load_in_8bit = True)
+
+tokenizer = AutoTokenizer.from_pretrained(fine_tuned_model_name)
+
+pipe = pipeline("text-generation", model = fine_tuned_model_name, tokenizer = tokenizer)
+```
+
+4. 추론
 ```
 preds = []
 
-for q in tqdm.tqdm(test['Question'], desc='Inference'):
-  answer = inference(q, fine_model, tokenizer, faiss_vectordb, bm25_okapi,
-              top_k=7, bm25_weight=0.1, faiss_weight=0.9)
-  preds.append(answer)
+for q in tqdm(test['Question'], desc="Inference"):
+    prompt = make_prompt_auto(q)
+    output = pipe(prompt, max_new_tokens=128, temperature=0.2, top_p=0.9)
+    pred_answer = extract_answer_only(output[0]["generated_text"], original_question=q)
+    preds.append(pred_answer)
 ```
 
 ### 설명   
