@@ -167,13 +167,5 @@ for q in tqdm(test['Question'], desc="Inference"):
     preds.append(pred_answer)
 ```
 
-### 설명   
-> text: 금융 관련 질문, top_docs: 하이브리드 검색을 통해 검색된 관련 문서
-
-이를 기반으로 "금융 관련 질문: {text} \n 관련 문서: {top_docs}" 형식으로 구성 토큰화 및 모델 입력 준비
-
-### PEFT 모델을 활용한 문장 생성
-* bm25, faiss와 각각의 가중치를 설정하여 top_docs 문서 추출    
-* fine_model.generate(**inputs, max_length=256) 주관식 문제의 경우 최대 256자 길이로 답을 생성     
-* tokenizer.decode(output_ids[0], skip_special_tokens=True) 특수 토큰을 제거하고 최종 답안을 반환     
+   
    
