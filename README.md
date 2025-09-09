@@ -17,17 +17,16 @@
    생성된 chunk를 모두 합쳐 'skt/A.X-4.0-Light' 오픈 모델을 활용하여 QADataset을 생성      
    
 
-# 추론    
+# 모델 학습
 ### LLM 파인튜닝     
 1. 모델 및 토크나이저 설정      
 ```   
-model_name = 'LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct'     
-model = AutoModelForCausalLM.from_pretrained(    
-      model_name,    
-      device_map={"":0},    
-      trust_remote_code=True,    
-      )     
- 
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map = None,
+    torch_dtype = torch.bfloat16
+)
+
 tokenizer = AutoTokenizer.from_pretrained(model_name)     
 ```    
 
@@ -36,21 +35,23 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
    LoRA (Low Rank Adaptation)는 파인튜닝을 위한 경량화 기법     
    pre-trained 모델에 가중치를 고정하고, 각 계층에 훈련 가능한 랭크 분해 행렬을 주입하여 훈련 가능한 매개 변수의 수를 크게 줄일 수 있음.      
    LoRA를 사용하면 기존 모델의 대규모 파라미터를 전부 재학습할 필요 없이, 소수의 추가 파라미터만을 학습하여 모델을 새로운 태스크에 적응시킬 수 있어, 전체 모델을 처음부터 다시 학습하는 것보다 훨씬 적은 계산 자원을 사용하여, 시간과 비용을 절
-   약 할 수 있음    
+   약 할 수 있음
 
-3. Trainning    
+'''
+lora_config = LoraConfig(
+    lora_alpha = 32,
+    lora_dropout = 0.05,
+    r = 32,
+    target_modules = ["q_proj", "k_proj", "v_proj"]
+)
 
-   경량화를 마친 모델에 QADataset을 학습    
+model = get_peft_model(model, lora_config)
+'''
 
-4. Model Load    
+4. Trainning    
 
-   ```
-   adapter_path = "/content/drive/MyDrive/1데이콘/2025금융AIChallenge금융AI모델경쟁/dataset/finetunning_model8/checkpoint-1104"   
-   fine_model = PeftModelForCausalLM.from_pretrained(model, adapter_path)    
-   fine_model = fine_model.merge_and_unload().to("cuda")
-   ```
-
-  merge_and_unload을 통해 Model 로드 후 학습된 adapter을 결합 후 제거     
+   경량화를 마친 모델에 QADataset을 학습
+      
 
 ### 추론     
 1. 하이브리드 검색기     
